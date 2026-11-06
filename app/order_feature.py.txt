@@ -1,0 +1,68 @@
+# Staff-only test orders; never sends messages or enables live ordering.
+class TestOrderLine(BaseModel):
+    sku: str
+    quantity: int = Field(ge=1, le=25)
+    special_instructions: str | None = Field(None,max_length=500)
+
+class TestOrderRequest(BaseModel):
+    customer_name: str = Field(default='Demo Customer',min_length=1,max_length=100)
+    items: list[TestOrderLine] = Field(min_length=1,max_length=30)
+
+@app.post('/api/v1/staff/test-orders', status_code=201)
+def create_test_order(body:TestOrderRequest, actor=Depends(staff),s:Session=Depends(db)):
+    r=restaurant(s)
+    lines=[];subtotal=0
+    for line in body.items:
+        item=s.execute(text("""SELECT sku,name,price_cents,available,active,review_note
+          FROM menu_items WHERE sku=:sku AND restaurant_id=:rid"""),
+          {'sku':line.sku,'rid':r['id']}).mappings().first()
+        if not item or not item['active'] or not item['available'] or item['review_note']:
+            raise HTTPException(409,f'Item unavailable or pending review: {line.sku}')
+        subtotal+=item['price_cents']*line.quantity
+        lines.append((line,item))
+    oid=str(uuid.uuid4())
+    ref='TEST-'+uuid.uuid4().hex[:8].upper()
+    cid=str(uuid.uuid4())
+    s.execute(text('INSERT INTO customers(id,name) VALUES (:id,:name)'),
+              {'id':cid,'name':body.customer_name})
+    s.execute(text("""INSERT INTO orders
+      (id,restaurant_id,customer_id,reference,idempotency_key,channel,status,
+       subtotal_cents,tax_cents,total_cents,customer_confirmed_at,is_test)
+      VALUES (:id,:rid,:cid,:ref,:key,'WHATSAPP','PENDING_APPROVAL',
+       :subtotal,0,:subtotal,now(),true)"""),
+      {'id':oid,'rid':r['id'],'cid':cid,'ref':ref,'key':ref,
+       'subtotal':subtotal})
+    for line,item in lines:
+        s.execute(text("""INSERT INTO order_items
+          (order_id,item_name_snapshot,unit_price_cents,quantity,modifiers_snapshot,special_instructions)
+          VALUES (:oid,:name,:price,:qty,'{}'::jsonb,:instructions)"""),
+          {'oid':oid,'name':item['name'],'price':item['price_cents'],
+           'qty':line.quantity,'instructions':line.special_instructions})
+    s.execute(text("""INSERT INTO order_events(order_id,to_status,actor)
+      VALUES (:id,'PENDING_APPROVAL','staff-demo')"""),{'id':oid})
+    s.commit()
+    return {'id':oid,'reference':ref,'status':'PENDING_APPROVAL','is_test':True,
+            'total_cents':subtotal,'tax_cents':0}
+
+@app.get('/api/v1/staff/orders')
+def list_staff_orders(actor=Depends(staff),s:Session=Depends(db)):
+    r=restaurant(s)
+    orders=s.execute(text("""SELECT o.id,o.reference,o.status,o.is_test,o.channel,
+      o.subtotal_cents,o.tax_cents,o.total_cents,o.pickup_eta,o.created_at,
+      c.name AS customer_name FROM orders o
+      LEFT JOIN customers c ON c.id=o.customer_id
+      WHERE o.restaurant_id=:rid ORDER BY o.created_at DESC LIMIT 100"""),
+      {'rid':r['id']}).mappings().all()
+    results=[]
+    for o in orders:
+        data=dict(o)
+        data['items']=[dict(x) for x in s.execute(text("""SELECT
+          item_name_snapshot,quantity,unit_price_cents,special_instructions
+          FROM order_items WHERE order_id=:id ORDER BY item_name_snapshot"""),
+          {'id':o['id']}).mappings()]
+        results.append(data)
+    return results
+
+@app.get('/owner/orders',include_in_schema=False)
+def owner_orders_page():
+    return FileResponse(Path(__file__).resolve().parent.parent / 'dashboard' / 'orders.html')

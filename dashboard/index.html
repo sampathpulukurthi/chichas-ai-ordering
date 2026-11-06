@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chicha's | Menu Availability</title>
+<style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#19262b;background:#f5f6f3}*{box-sizing:border-box}
+main{max-width:900px;margin:40px auto;padding:0 18px}header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+h1{margin:0;font-size:27px}.muted{color:#617078;font-size:13px}.panel{background:white;border:1px solid #e0e6e1;border-radius:15px;padding:18px;margin-top:18px}
+input,button,select{font:inherit;padding:11px;border:1px solid #c9d5d0;border-radius:9px}input{width:100%}button{cursor:pointer;background:#146b4c;color:white;border:0}
+button:disabled{opacity:.55;cursor:wait}.controls{display:grid;grid-template-columns:1fr 180px;gap:12px;margin:14px 0}
+.item{display:flex;align-items:center;justify-content:space-between;padding:13px 0;border-top:1px solid #eef0ee;gap:14px}
+.item:first-child{border:0}.name{font-weight:600}.pill{font-size:12px;padding:4px 9px;border-radius:20px;background:#e2f4e8;color:#11623d}
+.off{background:#ffe7e4;color:#aa2c22}.small{font-size:12px;color:#607078}.right{display:flex;align-items:center;gap:10px}
+.status{min-height:24px;margin:12px 0;font-size:14px}.warn{color:#a23520}
+@media(max-width:600px){.controls{grid-template-columns:1fr}.item{align-items:flex-start}.right{flex-direction:column;align-items:flex-end}}
+</style></head><body><main>
+<header><div><h1>Chicha's Menu</h1><div class="muted">Owner availability controls · POC</div></div><span class="pill">Draft menu</span></header>
+<section class="panel"><label for="key">Staff API key (stored in this tab's memory only)</label>
+<div style="display:flex;gap:10px;margin-top:8px"><input type="password" id="key" autocomplete="off" placeholder="Enter staff key"><button id="load">Load</button></div>
+<div class="muted" style="margin-top:8px">Never use this key in a public website. Live ordering remains disabled.</div></section>
+<section class="panel"><strong>Menu availability</strong><div id="status" class="status" role="status">Enter the staff key to load items.</div>
+<div class="controls"><input id="search" placeholder="Search items, e.g. Juicy Mandi"><select id="category"><option value="">All categories</option></select></div>
+<div id="summary" class="muted"></div><div id="items"></div></section>
+</main><script>
+let items=[], key='';
+const $=id=>document.getElementById(id);
+const status=(msg,err=false)=>{$('status').textContent=msg;$('status').className='status'+(err?' warn':'')};
+async function load(){
+ key=$('key').value.trim();if(!key){status('Enter your staff key.',true);return}
+ try{const res=await fetch('/api/v1/staff/menu',{headers:{'X-Staff-Api-Key':key},cache:'no-store'});
+ if(!res.ok)throw Error('Could not load menu (HTTP '+res.status+'). Check staff key and backend connection.');
+ items=await res.json();$('category').replaceChildren(new Option('All categories',''));
+ [...new Set(items.map(x=>x.category))].sort().forEach(x=>$('category').add(new Option(x,x)));
+ render();status('Menu loaded. Changes are saved directly to Supabase.');
+ }catch(e){status(e.message,true)}
+}
+function render(){
+ const q=$('search').value.toLowerCase(),cat=$('category').value;
+ const filtered=items.filter(x=>(!cat||x.category===cat)&&(x.name.toLowerCase().includes(q)||x.sku.toLowerCase().includes(q)));
+ $('summary').textContent=filtered.length+' items shown · '+items.filter(x=>!x.available).length+' out of stock';
+ $('items').replaceChildren();
+ for(const x of filtered){
+ const row=document.createElement('div');row.className='item';
+ const left=document.createElement('div'),title=document.createElement('div'),sub=document.createElement('div');
+ title.className='name';title.textContent=x.name;sub.className='small';sub.textContent=x.category+' · $'+(x.price_cents/100).toFixed(2)+(x.review_note?' · Review required':'');
+ left.append(title,sub);
+ const right=document.createElement('div');right.className='right';
+ const pill=document.createElement('span');pill.className='pill'+(x.available?'':' off');pill.textContent=x.available?'Available':'Out of stock';
+ const btn=document.createElement('button');btn.textContent=x.available?'Mark out of stock':'Restore';btn.onclick=()=>toggle(x,btn);
+ right.append(pill,btn);row.append(left,right);$('items').append(row);
+ }
+}
+async function toggle(item,btn){
+ const next=!item.available;
+ if(!confirm(next?'Restore '+item.name+' to available?':'Mark '+item.name+' as out of stock?'))return;
+ btn.disabled=true;
+ try{
+ const res=await fetch('/api/v1/staff/menu/'+item.id+'/availability',{method:'PATCH',headers:{'Content-Type':'application/json','X-Staff-Api-Key':key},body:JSON.stringify({available:next,reason:next?null:'SOLD_OUT'})});
+ if(!res.ok)throw Error('Update failed (HTTP '+res.status+').');
+ item.available=next;render();status(item.name+(next?' restored.':' marked out of stock.')+' Saved to Supabase.');
+ }catch(e){status(e.message,true);btn.disabled=false}
+}
+$('load').onclick=load;$('search').oninput=render;$('category').onchange=render;
+</script></body></html>

@@ -1,0 +1,61 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chicha's | Orders</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6f4;color:#20312b;font:15px system-ui,-apple-system,sans-serif}main{max-width:1000px;margin:35px auto;padding:0 18px}
+h1{margin:0 0 5px}a{color:#11684a}header{display:flex;justify-content:space-between;align-items:center;gap:15px}.panel{background:white;border:1px solid #dce4de;border-radius:14px;padding:18px;margin:18px 0}
+input,button,select{font:inherit;padding:10px;border:1px solid #cbd7ce;border-radius:8px}button{background:#11684a;color:white;border:0;cursor:pointer}button:disabled{opacity:.5}
+button.reject{background:#a63333}button.secondary{background:#e8eee9;color:#23422e}.flex{display:flex;gap:9px;flex-wrap:wrap;align-items:center}.flex input{flex:1;min-width:150px}
+.card{border:1px solid #e0e6e0;border-radius:10px;padding:15px;margin:12px 0}.muted{color:#63726a;font-size:13px}.badge{background:#fff0c8;padding:4px 8px;border-radius:20px;font-size:12px}.test{background:#e3edff}.row{display:flex;justify-content:space-between;gap:10px}.item{padding:5px 0;border-bottom:1px solid #edf0ec}
+#status{min-height:22px;margin-top:12px}label{font-size:13px}
+</style></head><body><main>
+<header><div><h1>Chicha's Orders</h1><div class="muted">Local owner POC · Demo orders do not send messages</div></div><a href="/owner/menu">Menu availability</a></header>
+<section class="panel"><div class="flex"><input type="password" id="key" placeholder="Staff API key" autocomplete="off"><button id="load">Load orders</button></div><div id="status" role="status">Enter the staff key to begin.</div></section>
+<section class="panel"><h3>Create demo order</h3><div class="muted">Test only. No live ordering or notifications. Tax is $0 in this demo, not a production quote.</div>
+<div class="flex" style="margin-top:12px"><input id="customer" value="Demo Customer" placeholder="Customer name"><select id="sku"><option value="">Load menu first</option></select><input type="number" id="qty" min="1" max="25" value="1" style="max-width:90px"><button id="create">Create test order</button></div></section>
+<section class="panel"><div class="row"><h3>Orders</h3><button class="secondary" id="refresh">Refresh</button></div><div id="orders"></div></section>
+</main><script>
+const $=id=>document.getElementById(id);let key='';
+const money=n=>'$'+(n/100).toFixed(2);
+const status=s=>$('status').textContent=s;
+async function request(url,opts={}){
+ const r=await fetch(url,{...opts,headers:{'X-Staff-Api-Key':key,...(opts.headers||{})}});
+ if(!r.ok){let detail='';try{detail=(await r.json()).detail}catch{}throw Error('HTTP '+r.status+': '+(detail||'Request failed'))}
+ return r.json()
+}
+async function load(){
+ key=$('key').value.trim();if(!key){status('Enter the staff API key.');return}
+ try{
+ const [orders,menu]=await Promise.all([request('/api/v1/staff/orders'),request('/api/v1/staff/menu')]);
+ $('sku').replaceChildren(new Option('Select an item',''));
+ menu.filter(x=>x.active&&x.available&&!x.review_note).forEach(x=>$('sku').add(new Option(x.name+' · '+money(x.price_cents),x.sku)));
+ render(orders);status('Loaded '+orders.length+' orders.');}
+ catch(e){status(e.message)}
+}
+function render(orders){
+ const root=$('orders');root.replaceChildren();
+ if(!orders.length){root.textContent='No orders yet. Create a demo order above.';return}
+ for(const o of orders){
+ const card=document.createElement('div');card.className='card';
+ const top=document.createElement('div');top.className='row';
+ const heading=document.createElement('strong');heading.textContent=o.reference+' · '+o.customer_name;
+ const badge=document.createElement('span');badge.className='badge'+(o.is_test?' test':'');badge.textContent=o.status+(o.is_test?' · TEST':'');
+ top.append(heading,badge);card.append(top);
+ const meta=document.createElement('div');meta.className='muted';meta.textContent=new Date(o.created_at).toLocaleString()+' · Total '+money(o.total_cents);card.append(meta);
+ for(const item of o.items){const line=document.createElement('div');line.className='item';line.textContent=item.quantity+' × '+item.item_name_snapshot+' · '+money(item.unit_price_cents)+(item.special_instructions?' · '+item.special_instructions:'');card.append(line)}
+ if(o.status==='PENDING_APPROVAL'){
+ const controls=document.createElement('div');controls.className='flex';controls.style.marginTop='12px';
+ const eta=document.createElement('input');eta.type='number';eta.min=5;eta.max=180;eta.value=25;eta.style.maxWidth='95px';eta.title='Pickup ETA minutes';
+ const accept=document.createElement('button');accept.textContent='Accept (confirm SpotOn entry)';
+ accept.onclick=async()=>{if(!confirm('Have you manually entered this order into SpotOn?'))return;try{await request('/api/v1/orders/'+o.id+'/accept',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pos_entry_confirmed:true,pickup_eta_minutes:Number(eta.value)})});await load()}catch(e){status(e.message)}};
+ const reject=document.createElement('button');reject.className='reject';reject.textContent='Reject';
+ reject.onclick=async()=>{const reason=prompt('Reason for rejection (minimum 3 characters):');if(!reason)return;try{await request('/api/v1/orders/'+o.id+'/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});await load()}catch(e){status(e.message)}};
+ controls.append(eta,accept,reject);card.append(controls)}
+ root.append(card)
+ }
+}
+$('load').onclick=load;$('refresh').onclick=load;
+$('create').onclick=async()=>{
+ if(!key)return status('Load orders first.');
+ const sku=$('sku').value;if(!sku)return status('Select an item.');
+ try{const r=await request('/api/v1/staff/test-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_name:$('customer').value,items:[{sku,quantity:Number($('qty').value)}]})});await load();status('Created '+r.reference+' (TEST). No messages sent.')}catch(e){status(e.message)}
+};
+</script></body></html>

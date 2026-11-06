@@ -1,0 +1,15 @@
+alter table restaurants add column if not exists orders_paused boolean not null default false;
+alter table restaurants add column if not exists pause_reason text;
+alter table restaurants add column if not exists pickup_cutoff_minutes integer not null default 0 check(pickup_cutoff_minutes between 0 and 180);
+alter table restaurants add column if not exists tax_rate_bps integer not null default 0 check(tax_rate_bps between 0 and 10000);
+alter table restaurants add column if not exists tax_configured boolean not null default false;
+alter table restaurants add column if not exists menu_approved boolean not null default false;
+alter table restaurants add column if not exists enabled_for_live_orders boolean not null default false;
+alter table carts add column if not exists restaurant_id uuid references restaurants(id);
+alter table orders add column if not exists customer_confirmed_at timestamptz;
+alter table orders add column if not exists pos_entry_confirmed boolean not null default false;
+alter table orders add column if not exists status_updated_at timestamptz not null default now();
+alter table orders add column if not exists notification_consent boolean not null default false;
+create unique index if not exists orders_cart_once on orders(cart_id) where cart_id is not null;
+create table if not exists order_events(id uuid primary key default gen_random_uuid(),order_id uuid not null references orders(id),from_status text,to_status text not null,actor text not null,created_at timestamptz not null default now());
+create table if not exists notification_outbox(id uuid primary key default gen_random_uuid(),order_id uuid not null references orders(id),event_type text not null,status text not null default 'QUEUED',attempts integer not null default 0,created_at timestamptz not null default now(),unique(order_id,event_type));
