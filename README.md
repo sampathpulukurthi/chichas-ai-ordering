@@ -1,76 +1,120 @@
-# Chicha's AI Ordering — Local FastAPI POC
+# Chicha's AI Ordering — Voice & WhatsApp System
 
-## Project layout
-- `app/main.py`: FastAPI endpoints (menu, restaurant policy, orders, owner menu availability)
-- `dashboard/index.html`: local owner menu page
-- `supabase/migrations/`: migrations already applied to Chicha's Supabase project
-- `supabase/seed_menu_draft.sql`: draft menu import (162 records)
-- `tests/`: backend tests
+Production-ready Proof of Concept for **Chicha's Indian Restaurant**:
+1. **Inbound Voice AI (Bolna):** Live menu stock checking, voice order taking, and cart confirmation.
+2. **Hotel Staff Dashboard:** Web UI for restaurant staff to review incoming orders, mark items out of stock, set pickup ETAs, and Accept or Reject orders.
+3. **Automated WhatsApp Notifications:** Instant customer messaging via Meta WhatsApp Cloud API with pickup time windows upon acceptance or cancellation reasons upon rejection.
 
-## Local setup
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    CustomerPhone["Customer Phone / Webcall"] --> Bolna["Bolna AI Voice Agent"]
+    
+    subgraph FastAPI Backend ["FastAPI Backend (app/main.py)"]
+        Context["/api/v1/bolna/inbound-context (Preload stock & categories)"]
+        CheckItem["/api/v1/bolna/check-item (Live inventory check & alternatives)"]
+        OrderHook["/api/v1/bolna/order-webhook (Validate, tax, create PENDING order)"]
+        StaffAPI["/api/v1/orders/{id}/accept & reject"]
+    end
+
+    Bolna --> Context
+    Bolna --> CheckItem
+    Bolna --> OrderHook
+
+    OrderHook --> DB[("SQLite (chichas.db) / Supabase Postgres")]
+    
+    subgraph Restaurant Dashboard ["Restaurant Staff UI (dashboard/)"]
+        MenuUI["/owner/menu (Toggle Available / Sold Out)"]
+        OrdersUI["/owner/orders (View orders, set ETA, Accept/Reject)"]
+    end
+
+    OrdersUI --> StaffAPI
+    StaffAPI --> DB
+    StaffAPI --> MetaWA["Meta WhatsApp Cloud API"]
+    MetaWA --> CustomerWA["Customer WhatsApp (Pickup ETA / Rejection Reason)"]
+```
+
+---
+
+## Implemented Workflows & Components
+
+### 1. Bolna AI Voice Endpoints
+* **`GET /api/v1/bolna/inbound-context`**: Preloads speech-friendly menu categories, open/closed status, and currently sold-out items (`{{out_of_stock}}`).
+* **`GET & POST /api/v1/bolna/check-item`**: Live in-call inventory check. If an item is sold out, automatically returns up to 2 available alternatives from the same category.
+* **`POST /api/v1/bolna/order-webhook`**: Validates ordered items live against menu stock, calculates tax and totals, supports both flat and nested schemas (strictly compliant with Azure OpenAI `gpt-4.1-mini`), and creates the order in `PENDING_APPROVAL` status.
+
+### 2. Hotel Staff Dashboard
+* **`/owner/orders` (`dashboard/orders.html`)**: Real-time incoming order dashboard. Staff reviews customer details and line items, inputs pickup ETA minutes (e.g. 25 min), and clicks **Accept** (confirming SpotOn entry) or **Reject**.
+* **`/owner/menu` (`dashboard/index.html`)**: Allows staff to search any of the 162 menu items and toggle their availability between `AVAILABLE` and `SOLD_OUT` in real time.
+
+### 3. Automated WhatsApp Dispatch
+* **Order Acceptance**: Calculates exact pickup window (e.g., *"Ready in approximately 25 minutes (around 7:45 PM EST)"*) and dispatches an automated WhatsApp confirmation message to the customer via Meta Graph API.
+* **Order Rejection**: Dispatches an apology message to the customer with the staff's rejection reason.
+
+### 4. Database
+* **Local SQLite (`chichas.db`)**: Pre-seeded with 162 menu items across 19 categories.
+* **`init_local_db.py`**: Standalone seeding script that initializes all tables and loads menu catalog directly from `supabase/seed_menu_draft.sql`.
+* **PostgreSQL / Supabase Ready**: All queries are cross-dialect compatible with SQLite and Supabase PostgreSQL.
+
+---
+
+## Local Setup
+
+### 1. Requirements
+Ensure Python 3.10+ is installed. Install dependencies:
 ```bash
-cd ~/Projects/chichas-ai-ordering
-source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2. Initialize Database
+Initialize the local SQLite database with the full menu:
+```bash
+python init_local_db.py
+```
+
+### 3. Environment Configuration
+Copy `.env.example` to `.env`:
+```bash
 cp .env.example .env
-# Edit .env on your Mac with the Supabase connection URI and a random staff key
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+Configure your credentials in `.env`:
+```ini
+DATABASE_URL=sqlite:///chichas.db
+STAFF_API_KEY=chichas-staff-secret-2026
+BOLNA_AUTH_TOKEN=chichas-bolna-secret-2026
+BYPASS_HOURS=true
+
+# Meta WhatsApp Cloud API (Optional for local testing, required for live WhatsApp dispatch)
+META_ACCESS_TOKEN=your_meta_system_user_token
+META_PHONE_NUMBER_ID=your_meta_phone_number_id
+GRAPH_API_VERSION=v21.0
 ```
 
-Open `http://127.0.0.1:8000/docs` for API documentation or `http://127.0.0.1:8000/owner/menu` for the owner page.
-
-**Safety:** The owner page is a local POC and uses a shared staff key, not production authentication. Do not expose it to the public Internet. Live ordering remains disabled until menu and tax are approved.
-
-## Architecture (current implementation)
-
-The backend is a **local proof of concept**, not a deployed voice/WhatsApp ordering service. Solid arrows below represent code paths implemented in this repository. Dashed arrows represent planned integrations or manual steps.
-
-```mermaid
-flowchart TD
-    Customer["Voice / WhatsApp customer (planned)"] -.-> Adapter["Channel webhook + AI conversation agent (not implemented)"]
-    Adapter -.-> API["FastAPI — app/main.py"]
-    Owner["Owner HTML dashboard — dashboard/"] --> API
-    API --> Rules["Hours, pause, menu, tax, order validation"]
-    Rules --> DB[("Supabase PostgreSQL")]
-    API --> Approval["Staff order acceptance / rejection"]
-    Approval --> DB
-    Approval --> Outbox["notification_outbox table"]
-    Outbox -.-> Delivery["SMS / WhatsApp sender (not implemented)"]
-    Approval -.-> POS["SpotOn POS — manual staff entry"]
+### 4. Run Server
+Start the FastAPI server:
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### Implemented components
+* **Swagger Docs:** `http://127.0.0.1:8000/docs`
+* **Staff Orders Dashboard:** `http://127.0.0.1:8000/owner/orders`
+* **Staff Menu Availability:** `http://127.0.0.1:8000/owner/menu`
 
-- **FastAPI** (`app/main.py`): health, restaurant availability, menu listing, order creation, owner pause, menu availability updates, staff order listing, test orders, and accept/reject endpoints.
-- **Order validation**: checks live-order enablement, menu and tax approval, opening hours and cutoff, owner pause, item availability, spice eligibility, customer confirmation, and an idempotency key. Calculates totals from database prices.
-- **Staff controls**: shared `X-Staff-Api-Key` header for POC-only staff endpoints. Accepting an order requires staff confirmation that it was manually entered into SpotOn; a generated reference is **not** a pickup confirmation until accepted.
-- **Supabase PostgreSQL** (`supabase/migrations/`): restaurant/menu, customers, conversations/carts, orders/items/events, notification outbox, and audit-related schema. Some tables support future integrations but are not wired into live channel handlers.
-- **Owner pages**: `dashboard/index.html` and `dashboard/orders.html`, served at `/owner/menu` and `/owner/orders`.
-- **Draft menu**: `supabase/seed_menu_draft.sql`; review and approve menu/tax before enabling live orders. Do not rerun seeds blindly.
+---
 
-### Target architecture (planned)
+## Automated Tests
 
-```mermaid
-flowchart TD
-    Voice["Inbound phone / voice provider"] --> Webhook["Authenticated channel adapters"]
-    WA["WhatsApp Cloud API"] --> Webhook
-    Webhook --> Agent["Conversation orchestration + AI agent"]
-    Agent --> API["FastAPI order / menu / availability API"]
-    Owner["Authenticated owner dashboard"] --> API
-    API --> DB[("Supabase PostgreSQL")]
-    API --> Outbox["Reliable notification outbox + worker"]
-    Outbox --> Notify["Customer SMS / WhatsApp confirmations"]
-    API --> POS["Manual SpotOn entry initially; API integration only if supported"]
-    API --> Observe["Logs, metrics, audit + error monitoring"]
-```
-
-**Not yet implemented:** inbound voice and WhatsApp webhooks, AI agent/orchestrator, outbound message worker, production staff login, hosting/monitoring, and automated SpotOn integration. The current backend writes notification-outbox events for qualifying accepted/rejected non-test orders, but does not send messages. Keep customer messaging subject to consent and channel policies.
-
-**Security:** Never commit `.env`, tokens, API keys, or database credentials. Replace the shared staff key with authenticated staff accounts before exposing the service publicly.
-
-## Tests
+Run the complete test suite (all 9 unit tests):
 ```bash
 pytest -q
 ```
-
-## Supabase
-Project ref: `lretkjtccfwtrulqohmc` (US East). Migrations and draft menu were already applied remotely. Do not rerun the seed without reviewing it.
+Covers:
+* Inbound context & category preloading
+* Live stock checks and out-of-stock alternative recommendations
+* Order webhook schema validation & order creation
+* Staff menu availability toggle
+* Staff order acceptance with pickup ETA calculation
+* SpotOn entry verification logic
