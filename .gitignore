@@ -1,9 +1,15 @@
 .venv/
+venv/
 __pycache__/
 *.py[cod]
+*.db
+*.sqlite
+*.sqlite3
 .env
 .env.*
 !.env.example
 .pytest_cache/
 .DS_Store
+.vscode/
+.idea/
 supabase/.temp/
